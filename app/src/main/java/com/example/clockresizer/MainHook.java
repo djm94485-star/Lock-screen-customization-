@@ -8,16 +8,12 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.WeakHashMap;
 
 public class MainHook implements IXposedHookLoadPackage {
-    private static final String[] IDS = {"lockscreen_clock_view_large", "lockscreen_clock_view"};
-    private static final String[] CLASSES = {"FlexClockView", "KeyguardClockSwitch", "AnimatableClockView",
-            "DigitalClockFaceView", "DefaultClockView", "ClockFaceView"};
+    private static final String PKG = "com.android.systemui.shared.clocks";
     private static final Set<View> done = Collections.newSetFromMap(new WeakHashMap<View, Boolean>());
-    private static final Set<String> logged = new HashSet<>();
 
     private static String idName(View v) {
         int id = v.getId();
@@ -25,46 +21,33 @@ public class MainHook implements IXposedHookLoadPackage {
         try { return v.getResources().getResourceEntryName(id); } catch (Throwable t) { return null; }
     }
 
-    private static String matchedClass(View v) {
-        for (Class<?> c = v.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
-            String n = c.getName();
-            for (String s : CLASSES) if (n.endsWith("." + s)) return s;
-        }
-        return null;
-    }
-
-    private static boolean ancestorDone(View v) {
-        ViewParent p = v.getParent();
-        while (p != null) {
-            if (p instanceof View && done.contains(p)) return true;
-            p = p.getParent();
-        }
-        return false;
-    }
-
     static void consider(View v) {
         try {
-            String cls = v.getClass().getName();
-            if (cls.contains("statusbar")) return;
-            String name = idName(v);
-            boolean hit = false;
-            String key = null;
-            if (name != null) {
-                for (String w : IDS) if (w.equals(name)) { hit = true; key = name; }
+            if (!v.getClass().getName().startsWith(PKG)) return;
+            // climb to the top-most clock-face view
+            View top = v;
+            ViewParent p = v.getParent();
+            while (p instanceof View && p.getClass().getName().startsWith(PKG)) {
+                top = (View) p;
+                p = p.getParent();
             }
-            if (!hit) {
-                String m = matchedClass(v);
-                if (m != null) { hit = true; key = "cls_" + m; }
+            if (done.contains(top)) return;
+            // large / small clock key, from ancestors' ids
+            String key = "clock";
+            StringBuilder chain = new StringBuilder();
+            ViewParent q = top.getParent();
+            for (int i = 0; q != null && i < 10; i++) {
+                if (q instanceof View) {
+                    String n = idName((View) q);
+                    chain.append(" > ").append(q.getClass().getSimpleName()).append("#").append(n);
+                    if ("lockscreen_clock_view_large".equals(n) || "lockscreen_clock_view".equals(n)) key = n;
+                }
+                q = q.getParent();
             }
-            String look = (name != null ? name : cls).toLowerCase();
-            if (look.contains("clock") && logged.add(cls + "|" + name)) {
-                XposedBridge.log("ClockResizer seen: id=" + name + " class=" + cls + " parent="
-                        + (v.getParent() == null ? "null" : v.getParent().getClass().getName()));
-            }
-            if (!hit || ancestorDone(v) || !done.add(v)) return;
-            XposedBridge.log("ClockResizer: hooked " + key + " (" + cls + ")");
-            new ClockResizer(v, key).install();
-        } catch (Throwable ignored) { }
+            done.add(top);
+            XposedBridge.log("ClockResizer: hooked key=" + key + " view=" + top.getClass().getName() + chain);
+            new ClockResizer(top, key).install();
+        } catch (Throwable t) { XposedBridge.log(t); }
     }
 
     @Override
@@ -74,10 +57,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(View.class, "onAttachedToWindow", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam p) { consider((View) p.thisObject); }
             });
-            XposedHelpers.findAndHookMethod(View.class, "setId", int.class, new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam p) { consider((View) p.thisObject); }
-            });
-            XposedBridge.log("ClockResizer: v5 hooks ready");
+            XposedBridge.log("ClockResizer: v6 hooks ready");
         } catch (Throwable t) { XposedBridge.log(t); }
     }
-                                            }
+        }
